@@ -118,7 +118,7 @@ class HurricaneDNS:
 
     def __reset_cache(self, element=None):
         if element is not None:
-            print("Will set cache from last response.")
+            print("--Setting cache from last response--")
         else:
             element = self.__submit()
 
@@ -216,7 +216,7 @@ class HurricaneDNS:
             try:
                 d = element.find('.//*[@id="content"]/div/div[2]')
                 domain = re.match(r"Managing zone: (.*)", d.text).group(1)
-                print("Will cache records from last response.")
+                print("--Caching records from last response--")
             except Exception as e:
                 print(e)
                 element = None
@@ -224,7 +224,7 @@ class HurricaneDNS:
         records = []
 
         if domain_info["type"] == "zone":
-            if element is not None:
+            if element is None:
                 element = self.__submit(
                     {
                         "hosted_dns_zoneid": domain_info["id"],
@@ -251,10 +251,11 @@ class HurricaneDNS:
                         "mx": data[5].text,
                         "value": data[6].text,
                         "extended": data[6].get("data"),
+                        "ddns": data[7].text,
                     }
                 )
         elif domain_info["type"] == "slave":
-            if element is not None:
+            if element is None:
                 element = self.__submit(
                     {"domid": domain_info["id"], "menu": "edit_slave", "action": "edit"}
                 )
@@ -307,7 +308,7 @@ class HurricaneDNS:
                 results.append(r)
         return results
 
-    def __add_or_edit_record(self, domain, record_id, host, rtype, value, mx, ttl):
+    def __add_or_edit_record(self, domain, record_id, host, rtype, value, mx, ttl, DDNS_key):
         domain = domain.lower()
         d = self.get_domain(domain)
 
@@ -316,6 +317,7 @@ class HurricaneDNS:
                 'Domain "%s" is a slave zone, this is a bad idea!' % domain
             )
 
+        # 创建记录
         try:
             element = self.__submit(
                 {
@@ -330,25 +332,58 @@ class HurricaneDNS:
                     "Priority": mx or "",
                     "Content": value,
                     "TTL": ttl,
-                    "dynamic": 1,
+                    "dynamic": 1 if DDNS_key else 0,
                 }
             )
+            info = element.find('.//div[@id="dns_status"]')
         except HurricaneError as e:
             raise HurricaneBadArgumentError(e)
 
         if element.find('.//div[@id="dns_err"]') is not None:
             # this should mean duplicate records
             pass
-        elif element.find('.//div[@id="dns_status"]') is None:
+        elif info is None:
             raise HurricaneBadArgumentError(
                 f'Record "{host}" ({rtype}) not added or modified for domain "{domain}"'
             )
+        else:
+            print(info.text)
+
+        # 提交DDNS_key
+        if DDNS_key:
+            try:
+                element = self.__submit(
+                    {
+                        "account": "",  # self.__account,
+                        "menu": "edit_zone",
+                        "hosted_dns_zoneid": d["id"],
+                        "hosted_dns_recordid": record_id or "",
+                        "hosted_dns_editzone": 1,
+                        "Name": host.lower(),
+                        "Key": DDNS_key,
+                        "Key2": DDNS_key,
+                        "generate_key": "Submit",
+                    }
+                )
+                info = element.find('.//div[@id="dns_status"]')
+            except HurricaneError as e:
+                raise HurricaneBadArgumentError(e)
+
+            if element.find('.//div[@id="dns_err"]') is not None:
+                # this should mean duplicate records
+                pass
+            elif info is None:
+                raise HurricaneBadArgumentError(
+                    f'Record "{host}" ({rtype}) not added or modified for domain "{domain}"'
+                )
+            else:
+                print(info.text, host)
 
         # 更新记录缓存
         self.cache_records(element=element)
 
-    def add_record(self, domain, host, rtype, value, mx=None, ttl=86400):
-        self.__add_or_edit_record(domain, None, host, rtype, value, mx, ttl)
+    def add_record(self, domain, host, rtype, value, mx=None, ttl=86400, DDNS_key=None):
+        self.__add_or_edit_record(domain, None, host, rtype, value, mx, ttl, DDNS_key)
 
     def edit_record(
         self,
@@ -384,7 +419,7 @@ class HurricaneDNS:
         if not ttl:
             ttl = record["ttl"]
 
-        self.__add_or_edit_record(domain, record["id"], host, rtype, value, mx, ttl)
+        self.__add_or_edit_record(domain, record["id"], host, rtype, value, mx, ttl, record["ddns"])
 
     def del_record(self, domain, record_id):
         d = self.get_domain(domain.lower())
@@ -393,7 +428,7 @@ class HurricaneDNS:
                 'Domain "%s" is a slave zone, this is a bad idea!' % domain
             )
 
-        self.__submit(
+        element = self.__submit(
             {
                 "hosted_dns_zoneid": d["id"],
                 "hosted_dns_recordid": record_id,

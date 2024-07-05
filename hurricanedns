@@ -157,7 +157,7 @@ class HurricaneDNSShell(cmd.Cmd):
                     (option, value) = args[1].split("=", 1)
                     extra[option] = value
                 self._get_hdns().add_domain(domain, **extra)
-            elif 6 >= len(args) >= 4:
+            elif 7 >= len(args) >= 4:
                 self._get_hdns().add_record(*args)
             else:
                 self._do_error("Invalid arguments")
@@ -346,17 +346,19 @@ class HurricaneDNSShell(cmd.Cmd):
                 maxhost = max(len(item["host"]) for item in records)
                 maxvalue = max(len(item["value"]) for item in records)
                 maxttl = max(len(item["ttl"]) for item in records)
-                template = "%%%ds %%-5s %%-%ds %%%ds %%6s" % (maxhost, maxvalue, maxttl)
-                print(template % ("HOST", "TYPE", "VALUE", "TTL", "MX"))
+                template = f"%-10s %{maxhost}s %-5s %-{maxvalue}s %{maxttl}s %5s %4s"
+                print(template % ("ID", "HOST", "TYPE", "VALUE", "TTL", "MX", "DDNS"))
                 for record in records:
                     print(
                         template
                         % (
+                            record["id"],
                             record["host"],
                             record["type"],
                             record["value"],
                             record["ttl"],
                             record["mx"],
+                            'Y' if record["ddns"] == '1' else 'N',
                         )
                     )
         else:
