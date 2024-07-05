@@ -7,12 +7,12 @@ except ImportError:
 
 setup(
     name="hurricanedns",
-    version="1.0.3",
+    version="1.0.4",
     description="Hurricane Electric DNS python library",
     author="Brian Hartvigsen",
     author_email="brian.andrew@brianandjenny.com",
     url="https://github.com/tresni/pyhurricanedns",
-    install_requires=["lxml", "html5lib"],
+    install_requires=["lxml"],
     extras_require={"import": ["dnspython"]},
     py_modules=["HurricaneDNS"],
     scripts=["hurricanedns"],

@@ -4,24 +4,17 @@ Hurricane Electric DNS library module
 Inspired by EveryDNS Python library by Scott Yang:
     http://svn.fucoder.com/fucoder/pyeverydns/everydnslib.py
 """
-try:
-    from http.cookiejar import CookieJar
-except ImportError:
-    from cookielib import CookieJar
 
-try:
-    from urllib.parse import urlencode
-    from urllib.request import HTTPCookieProcessor, build_opener
-except ImportError:
-    from urllib import urlencode
-    from urllib2 import build_opener, HTTPCookieProcessor
+from http.cookiejar import CookieJar
+
+from urllib.parse import urlencode
+from urllib.request import HTTPCookieProcessor, build_opener
 
 import re
 import warnings
 from importlib.metadata import version
 
-import html5lib
-import lxml
+from lxml import etree
 
 try:
     __version__ = version("hurricanedns")
@@ -31,10 +24,6 @@ __author__ = "Brian Hartvigsen <brian.andrew@brianandjenny.com>"
 __copyright__ = "Copyright 2015, Brian Hartvigsen"
 __credits__ = ["Scott Yang", "Brian Hartvigsen"]
 __license__ = "MIT"
-
-# Basically we just want to make sure it's here.  We need lxml because
-# ElementTree does not support parent relationships in XPath
-assert lxml
 
 HTTP_USER_AGENT = "PyHurriceDNS/%s" % __version__
 HTTP_REQUEST_PATH = "https://dns.he.net/index.cgi"
@@ -60,6 +49,96 @@ class HurricaneDNS:
         self.__domains = {}
 
         self.login(username, password, totp)
+
+    def __process(self, data=None):
+        if isinstance(data, dict) or isinstance(data, list):
+            data = urlencode(data).encode("UTF-8")
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            res = etree.HTML(self.__opener.open(HTTP_REQUEST_PATH, data).read())
+
+        error = res.find('.//div[@id="content"]/div/div[@id="dns_err"]')
+
+        if error is not None:
+            # This is not a real error...
+            if "properly delegated" in error.text:
+                pass
+            elif "record already exists" in error.text.lower():
+                pass
+            else:
+                raise HurricaneError(error.text)
+
+        return res
+
+    def login(self, username, password, totp=None):
+        # Are we already logged in?
+        if self.__account is not None:
+            return True
+
+        # Get our CGISESSID cookie
+        self.__process()
+
+        # submit the login form
+        try:
+            res = self.__process(
+                {"email": username, "pass": password, "submit": "Login!"}
+            )
+        except HurricaneError:
+            raise HurricaneAuthenticationError("Invalid Username/Password")
+
+        if res.find('.//input[@type="text"][@name="tfacode"]') is not None:
+            try:
+                res = self.__process({"tfacode": totp, "submit": "Submit"})
+            except HurricaneError:
+                raise HurricaneAuthenticationError("Invalid 2FA code")
+
+        account = res.find('.//input[@type="hidden"][@name="account"]').get("value")
+        if account:
+            self.__account = account
+        else:
+            raise HurricaneAuthenticationError("Login failure")
+
+        return True
+
+    def list_domains(self):
+        res = self.__process()
+        domains = {}
+
+        the_list = res.findall('.//img[@alt="edit"]')
+        the_list += res.findall('.//img[@alt="information"]')
+        for d in the_list:
+            info = d.findall("./../../td")
+            info = info[len(info) - 1].find("img")
+            domain_type = "zone"
+            if d.get("menu") is not None:
+                domain_type = re.match(r"edit_(.*)", d.get("menu")).group(1)
+            else:
+                domain_type = re.search(r"menu=edit_([a-z]+)", d.get("onclick")).group(
+                    1
+                )
+
+            domains[info.get("name")] = {
+                "domain": info.get("name"),
+                "id": info.get("value"),
+                "type": domain_type,
+                "records": None,
+            }
+
+        return domains.values()
+
+    def cache_domains(self):
+        if not self.__domains:
+            self.__domains = self.list_domains()
+        return self.__domains
+
+    def get_domain(self, domain):
+        domain = domain.lower()
+        for d in self.cache_domains():
+            if d["domain"] == domain:
+                return d
+
+        raise HurricaneBadArgumentError('Domain "%s" does not exist' % domain)
 
     def add_domain(self, domain, master=None, method=None):
         domain = domain.lower()
@@ -97,115 +176,6 @@ class HurricaneDNS:
         # HACK: Instead we should just add the domain
         self.__domains = None
 
-    def __add_or_edit_record(self, domain, record_id, host, rtype, value, mx, ttl):
-        domain = domain.lower()
-        d = self.get_domain(domain)
-
-        if d["type"] == "slave":
-            raise HurricaneBadArgumentError(
-                'Domain "%s" is a slave zone, this is a bad idea!' % domain
-            )
-
-        try:
-            res = self.__process(
-                {
-                    "account": "",  # self.__account,
-                    "menu": "edit_zone",
-                    "hosted_dns_zoneid": d["id"],
-                    "hosted_dns_recordid": record_id or "",
-                    "hosted_dns_editzone": 1,
-                    "hosted_dns_editrecord": "Update" if record_id else "Submit",
-                    "Name": host.lower(),
-                    "Type": rtype,
-                    "Priority": mx or "",
-                    "Content": value,
-                    "TTL": ttl,
-                }
-            )
-        except HurricaneError as e:
-            raise HurricaneBadArgumentError(e)
-
-        if res.find('.//div[@id="dns_err"]') is not None:
-            # this should mean duplicate records
-            pass
-        elif res.find('.//div[@id="dns_status"]') is None:
-            raise HurricaneBadArgumentError(
-                f'Record "{host}" ({rtype}) not added or modified for domain "{domain}"'
-            )
-        # HACK: Be better to invalidate a single record...
-        d["records"] = None
-
-    def edit_record(
-        self,
-        domain,
-        host,
-        rtype,
-        old_value=None,
-        old_mx=None,
-        old_ttl=None,
-        value=None,
-        mx=None,
-        ttl=None,
-    ):
-        if value is None and ttl is None and not (rtype == "MX" and mx is not None):
-            raise HurricaneError(
-                "You must specify one or more of value, ttl or mx priority"
-            )
-
-        record = list(self.get_records(domain, host, rtype, old_value, old_mx, old_ttl))
-        if len(record) > 1:
-            raise HurricaneBadArgumentError(
-                "Criteria matches multiple records, please be more specific"
-            )
-        else:
-            record = record[0]
-
-        if not value:
-            value = record["value"]
-        if (not mx) and rtype == "MX":
-            mx = record["mx"]
-        if not ttl:
-            ttl = record["ttl"]
-
-        self.__add_or_edit_record(domain, record["id"], host, rtype, value, mx, ttl)
-
-    def add_record(self, domain, host, rtype, value, mx=None, ttl=86400):
-        self.__add_or_edit_record(domain, None, host, rtype, value, mx, ttl)
-
-    def del_record(self, domain, record_id):
-        d = self.get_domain(domain.lower())
-        if d["type"] == "slave":
-            raise HurricaneBadArgumentError(
-                'Domain "%s" is a slave zone, this is a bad idea!' % domain
-            )
-
-        self.__process(
-            {
-                "hosted_dns_zoneid": d["id"],
-                "hosted_dns_recordid": record_id,
-                "menu": "edit_zone",
-                "hosted_dns_delconfirm": "delete",
-                "hosted_dns_editzone": 1,
-                "hosted_dns_delrecord": 1,
-            }
-        )
-
-        # HACK: Be better to invaldate a single record...
-        d["records"] = None
-
-    def del_records(self, domain, host, rtype=None, value=None, mx=None, ttl=None):
-        domain = domain.lower()
-        d = self.get_domain(domain)
-        if d["type"] == "slave":
-            raise HurricaneBadArgumentError(
-                'Domain "%s" is a slave zone, this is a bad idea!' % domain
-            )
-
-        for r in self.get_records(domain, host, rtype, value, mx, ttl):
-            if r["status"] == "locked":
-                continue
-            self.del_record(domain, r["id"])
-
     def del_domain(self, domain):
         domain = domain.lower()
         self.__process(
@@ -217,75 +187,6 @@ class HurricaneDNS:
         )
         # HACK: instead we could just remove the one domain
         self.__domains = None
-
-    def get_domain(self, domain):
-        domain = domain.lower()
-        for d in self.cache_domains():
-            if d["domain"] == domain:
-                return d
-
-        raise HurricaneBadArgumentError('Domain "%s" does not exist' % domain)
-
-    def cache_domains(self):
-        if not self.__domains:
-            self.__domains = self.list_domains()
-        return self.__domains
-
-    def list_domains(self):
-        res = self.__process()
-        domains = {}
-
-        the_list = res.findall('.//img[@alt="edit"]')
-        the_list += res.findall('.//img[@alt="information"]')
-        for d in the_list:
-            info = d.findall("./../../td")
-            info = info[len(info) - 1].find("img")
-            domain_type = "zone"
-            if d.get("menu") is not None:
-                domain_type = re.match(r"edit_(.*)", d.get("menu")).group(1)
-            else:
-                domain_type = re.search(r"menu=edit_([a-z]+)", d.get("onclick")).group(
-                    1
-                )
-
-            domains[info.get("name")] = {
-                "domain": info.get("name"),
-                "id": info.get("value"),
-                "type": domain_type,
-                "records": None,
-            }
-
-        return domains.values()
-
-    def get_record(self, domain, record_id):
-        records = self.cache_records(domain)
-        for r in records:
-            if r["id"] == record_id:
-                return r
-        raise HurricaneBadArgumentError(
-            f'Record {record_id} does not exist for domain "{domain}"'
-        )
-
-    def get_records(self, domain, host, rtype=None, value=None, mx=None, ttl=None):
-        rtype = rtype.lower() if rtype else rtype
-        records = self.cache_records(domain)
-        results = []
-        for r in records:
-            if (
-                r["host"] == host
-                and (rtype is None or r["type"].lower() == rtype)
-                and (value is None or r["value"] == value)
-                and (mx is None or r["mx"] == mx)
-                and (ttl is None or r["ttl"] == ttl)
-            ):
-                results.append(r)
-        return results
-
-    def cache_records(self, domain):
-        d = self.get_domain(domain)
-        if not d["records"]:
-            d["records"] = self.list_records(domain)
-        return d["records"]
 
     def list_records(self, domain):
         d = self.get_domain(domain)
@@ -340,57 +241,142 @@ class HurricaneDNS:
             ]
         return records
 
-    def login(self, username, password, totp=None):
-        # Are we already logged in?
-        if self.__account is not None:
-            return True
+    def cache_records(self, domain):
+        d = self.get_domain(domain)
+        if not d["records"]:
+            d["records"] = self.list_records(domain)
+        return d["records"]
 
-        # Get our CGISESSID cookie
-        self.__process()
+    def get_record(self, domain, record_id):
+        records = self.cache_records(domain)
+        for r in records:
+            if r["id"] == record_id:
+                return r
+        raise HurricaneBadArgumentError(
+            f'Record {record_id} does not exist for domain "{domain}"'
+        )
 
-        # submit the login form
+    def get_records(self, domain, host, rtype=None, value=None, mx=None, ttl=None):
+        rtype = rtype.lower() if rtype else rtype
+        records = self.cache_records(domain)
+        results = []
+        for r in records:
+            if (
+                r["host"] == host
+                and (rtype is None or r["type"].lower() == rtype)
+                and (value is None or r["value"] == value)
+                and (mx is None or r["mx"] == mx)
+                and (ttl is None or r["ttl"] == ttl)
+            ):
+                results.append(r)
+        return results
+
+    def __add_or_edit_record(self, domain, record_id, host, rtype, value, mx, ttl):
+        domain = domain.lower()
+        d = self.get_domain(domain)
+
+        if d["type"] == "slave":
+            raise HurricaneBadArgumentError(
+                'Domain "%s" is a slave zone, this is a bad idea!' % domain
+            )
+
         try:
             res = self.__process(
-                {"email": username, "pass": password, "submit": "Login!"}
+                {
+                    "account": "",  # self.__account,
+                    "menu": "edit_zone",
+                    "hosted_dns_zoneid": d["id"],
+                    "hosted_dns_recordid": record_id or "",
+                    "hosted_dns_editzone": 1,
+                    "hosted_dns_editrecord": "Update" if record_id else "Submit",
+                    "Name": host.lower(),
+                    "Type": rtype,
+                    "Priority": mx or "",
+                    "Content": value,
+                    "TTL": ttl,
+                    "dynamic": 1,
+                }
             )
-        except HurricaneError:
-            raise HurricaneAuthenticationError("Invalid Username/Password")
+        except HurricaneError as e:
+            raise HurricaneBadArgumentError(e)
 
-        if res.find('.//input[@type="text"][@name="tfacode"]') is not None:
-            try:
-                res = self.__process({"tfacode": totp, "submit": "Submit"})
-            except HurricaneError:
-                raise HurricaneAuthenticationError("Invalid 2FA code")
+        if res.find('.//div[@id="dns_err"]') is not None:
+            # this should mean duplicate records
+            pass
+        elif res.find('.//div[@id="dns_status"]') is None:
+            raise HurricaneBadArgumentError(
+                f'Record "{host}" ({rtype}) not added or modified for domain "{domain}"'
+            )
+        # HACK: Be better to invalidate a single record...
+        d["records"] = None
 
-        account = res.find('.//input[@type="hidden"][@name="account"]').get("value")
-        if account:
-            self.__account = account
+    def add_record(self, domain, host, rtype, value, mx=None, ttl=86400):
+        self.__add_or_edit_record(domain, None, host, rtype, value, mx, ttl)
+
+    def del_record(self, domain, record_id):
+        d = self.get_domain(domain.lower())
+        if d["type"] == "slave":
+            raise HurricaneBadArgumentError(
+                'Domain "%s" is a slave zone, this is a bad idea!' % domain
+            )
+
+        self.__process(
+            {
+                "hosted_dns_zoneid": d["id"],
+                "hosted_dns_recordid": record_id,
+                "menu": "edit_zone",
+                "hosted_dns_delconfirm": "delete",
+                "hosted_dns_editzone": 1,
+                "hosted_dns_delrecord": 1,
+            }
+        )
+
+        # HACK: Be better to invaldate a single record...
+        d["records"] = None
+
+    def del_records(self, domain, host, rtype=None, value=None, mx=None, ttl=None):
+        domain = domain.lower()
+        d = self.get_domain(domain)
+        if d["type"] == "slave":
+            raise HurricaneBadArgumentError(
+                'Domain "%s" is a slave zone, this is a bad idea!' % domain
+            )
+
+        for r in self.get_records(domain, host, rtype, value, mx, ttl):
+            if r["status"] == "locked":
+                continue
+            self.del_record(domain, r["id"])
+
+    def edit_record(
+        self,
+        domain,
+        host,
+        rtype,
+        old_value=None,
+        old_mx=None,
+        old_ttl=None,
+        value=None,
+        mx=None,
+        ttl=None,
+    ):
+        if value is None and ttl is None and not (rtype == "MX" and mx is not None):
+            raise HurricaneError(
+                "You must specify one or more of value, ttl or mx priority"
+            )
+
+        record = list(self.get_records(domain, host, rtype, old_value, old_mx, old_ttl))
+        if len(record) > 1:
+            raise HurricaneBadArgumentError(
+                "Criteria matches multiple records, please be more specific"
+            )
         else:
-            raise HurricaneAuthenticationError("Login failure")
+            record = record[0]
 
-        return True
+        if not value:
+            value = record["value"]
+        if (not mx) and rtype == "MX":
+            mx = record["mx"]
+        if not ttl:
+            ttl = record["ttl"]
 
-    def __process(self, data=None):
-        if isinstance(data, dict) or isinstance(data, list):
-            data = urlencode(data).encode("UTF-8")
-
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore")
-            res = html5lib.parse(
-                self.__opener.open(HTTP_REQUEST_PATH, data),
-                namespaceHTMLElements=False,
-                treebuilder="lxml",
-            )
-
-        error = res.find('.//div[@id="content"]/div/div[@id="dns_err"]')
-
-        if error is not None:
-            # This is not a real error...
-            if "properly delegated" in error.text:
-                pass
-            elif "record already exists" in error.text.lower():
-                pass
-            else:
-                raise HurricaneError(error.text)
-
-        return res
+        self.__add_or_edit_record(domain, record["id"], host, rtype, value, mx, ttl)
