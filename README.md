@@ -19,8 +19,12 @@ pip install .
 
 ## What works?
 
-- add (domain, record)
-- del (domain, record). Using filter, delete all match records, **please handle with caution**.
+- add (domain, record).
+  - Support adding DDNS keys while adding new records.
+
+- del (domain, record).
+  - Using filter, delete all match records, **please handle with caution**.
+
 - ls (domain, record)
 - import (BIND zone files)
 - cp (records from one domain to another)
