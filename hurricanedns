@@ -84,7 +84,7 @@ class HurricaneDNSShell(cmd.Cmd):
             self._do_error("If passing 3 arguments, first arg shoudl be -f")
             return
 
-        existing = self._get_hdns().domain_list.keys()
+        existing = self._get_hdns().domain_list
 
         src = args[0].lower()
         target = args[1].lower()
@@ -101,7 +101,7 @@ class HurricaneDNSShell(cmd.Cmd):
                 self._do_error(e)
                 return
 
-        src_records = self._get_hdns().get_records_by_domain(src)
+        src_records = self._get_hdns().get_domain_records(src)
 
         for record in src_records:
             host = record["host"][::-1].replace(src[::-1], target[::-1], 1)[::-1]
@@ -127,7 +127,7 @@ class HurricaneDNSShell(cmd.Cmd):
         if pos < 2 or pos > 3:
             return
 
-        domains = self._get_hdns().domain_list.keys()
+        domains = self._get_hdns().domain_list
         if pos == 3:
             domains = filter(lambda x: x.lower() != args[1].lower(), domains)
 
@@ -170,7 +170,7 @@ class HurricaneDNSShell(cmd.Cmd):
         if not text:
             pos += 1
 
-        domains = self._get_hdns().domain_list.keys()
+        domains = self._get_hdns().domain_list
         if pos == 2:
             return self.filter_down(args, pos, domains)
         elif args[1] not in domains:
@@ -236,14 +236,14 @@ class HurricaneDNSShell(cmd.Cmd):
         if not text:
             pos += 1
 
-        domains = self._get_hdns().domain_list.keys()
+        domains = self._get_hdns().domain_list
         if pos <= 1:
             return
         elif pos == 2:
             return self.filter_down(args, pos, domains)
         else:
             if args[1] in domains:
-                records = self._get_hdns().get_records_by_domain(args[1])
+                records = self._get_hdns().get_domain_records(args[1])
                 records = filter(lambda x: x["status"] != "locked", records)
             else:
                 records = None
@@ -315,7 +315,7 @@ class HurricaneDNSShell(cmd.Cmd):
         domains = list(
             filter(
                 lambda x: x.startswith(text) if text else True,
-                self._get_hdns().domain_list.keys(),
+                self._get_hdns().domain_list,
             )
         )
         return domains
@@ -334,13 +334,13 @@ class HurricaneDNSShell(cmd.Cmd):
 
         """
         if args:
-            existing = self._get_hdns().domain_list.keys()
+            existing = self._get_hdns().domain_list
             records = []
             for domain in split_args(args):
                 if domain.lower() not in existing:
                     self._do_error("Invalid domain: " + domain)
                     continue
-                records.extend(self._get_hdns().get_records_by_domain(domain))
+                records.extend(self._get_hdns().get_domain_records(domain))
 
             if records:
                 maxhost = max(len(item["host"]) for item in records)
@@ -358,15 +358,19 @@ class HurricaneDNSShell(cmd.Cmd):
                             record["value"],
                             record["ttl"],
                             record["mx"],
-                            'Y' if record["ddns"] == '1' else 'N',
+                            "Y" if record["ddns"] == "1" else "N",
                         )
                     )
         else:
-            domains = self._get_hdns().domain_list.values()
-            domains = sorted(domains, key=lambda item: item["domain"])
-            print("TYPE       DOMAIN")
-            for domain in domains:
-                print("%-9s %s" % (domain["type"], domain["domain"]))
+            # ls domains
+            domain_dict = self._get_hdns().get_domain_info("all")
+            template = "%-10s %-9s %s"
+            print(template % ("ID", "DOMAIN", "TYPE"))
+            for domain in sorted(domain_dict.keys()):
+                print(
+                    template
+                    % (domain_dict[domain]["id"], domain, domain_dict[domain]["type"])
+                )
 
     def do_import(self, args):
         """!NAME
