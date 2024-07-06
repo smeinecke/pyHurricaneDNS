@@ -63,6 +63,7 @@ class HurricaneDNS:
     def __submit(self, postdata=None):
         if isinstance(postdata, dict) or isinstance(postdata, list):
             postdata = urlencode(postdata).encode("UTF-8")
+            # print(postdata) # debug
         
         response = self.__opener.open(HTTP_REQUEST_PATH, postdata)
         
@@ -332,6 +333,14 @@ class HurricaneDNS:
                 results.append(r)
         return results
 
+    def __fullhost(self, domain, host):
+        if host.endswith(domain):
+            h = host.lower()
+        else:
+            h = host + "." + domain
+            h = h.lower()
+        return h
+
     def __add_or_edit_record(
         self, domain, record_id, host, rtype, value, mx, ttl, DDNS_key
     ):
@@ -377,7 +386,7 @@ class HurricaneDNS:
                         "hosted_dns_zoneid": domain_info["id"],
                         "hosted_dns_recordid": record_id or "",
                         "hosted_dns_editzone": 1,
-                        "Name": host.lower(),
+                        "Name": self.__fullhost(domain, host),
                         "Key": DDNS_key,
                         "Key2": DDNS_key,
                         "generate_key": "Submit",
