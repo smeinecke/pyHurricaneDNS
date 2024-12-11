@@ -53,7 +53,7 @@ class HurricaneDNS:
         Args:
             username (str): DNS account username
             password (str): DNS account password
-            totp (str | None, optional): Two-factor authentication code. Defaults to None.
+            totp (str, optional): Two-factor authentication code. Defaults to None.
         """
         self.__account = None
         self.__cookie = CookieJar()
@@ -68,13 +68,14 @@ class HurricaneDNS:
         Submit a request to the Hurricane DNS web interface.
 
         Args:
-            postdata (dict | list | None, optional): Data to be posted to the web interface. Defaults to None.
+            postdata (dict | list, optional): Data to be posted to the web interface. Defaults to None.
 
         Returns:
             etree._Element: The HTML response from the web interface.
         """
         if isinstance(postdata, dict) or isinstance(postdata, list):
             postdata = urlencode(postdata).encode("UTF-8")
+            logger.debug("Post data: %s", postdata)
             # print(postdata) # debug
 
         response = self.__opener.open(HTTP_REQUEST_PATH, postdata)
@@ -104,10 +105,10 @@ class HurricaneDNS:
         Build a dictionary of domain information from the web interface.
 
         Args:
-            element (etree._Element | None, optional): The HTML response from the web interface. Defaults to None.
+            element (etree._Element, optional): The HTML response from the web interface. Defaults to None.
 
         Returns:
-            dict[str, dict[str, str | list | None]]: A dictionary of domain information, where each key is a domain name and the value is a dictionary with keys "domain", "id", "type", and "records".
+            dict[str, dict[str, str | list]]: A dictionary of domain information, where each key is a domain name and the value is a dictionary with keys "domain", "id", "type", and "records".
         """
         if element is not None:
             logger.debug("Reading domain list from last response")
@@ -144,7 +145,7 @@ class HurricaneDNS:
         Update the domain cache dictionary with the latest information from the web interface.
 
         Args:
-            element (etree._Element | None, optional): The HTML response from the web interface. Defaults to None.
+            element (etree._Element, optional): The HTML response from the web interface. Defaults to None.
 
         Returns:
             None
@@ -167,7 +168,7 @@ class HurricaneDNS:
         Args:
             username (str): DNS account username
             password (str): DNS account password
-            totp (str | None, optional): Two-factor authentication code. Defaults to None.
+            totp (str, optional): Two-factor authentication code. Defaults to None.
 
         Returns:
             bool: True if login is successful, False if not.
@@ -223,8 +224,8 @@ class HurricaneDNS:
 
         Args:
             domain (str): The domain to add.
-            master (str | list | tuple | None, optional): The master DNS server(s) for a slave zone. Defaults to None.
-            method (str | None, optional): The method to use for adding a reverse zone. Defaults to None.
+            master (str | list | tuple, optional): The master DNS server(s) for a slave zone. Defaults to None.
+            method (str, optional): The method to use for adding a reverse zone. Defaults to None.
 
         Raises:
             HurricaneBadArgumentError: If the domain is a slave zone and a method is given, or vice versa.
@@ -275,7 +276,7 @@ class HurricaneDNS:
             key (str): The domain name or "all" to get the entire cache.
 
         Returns:
-            dict[str, dict[str, str | list | None]]: The domain information as a dictionary.
+            dict[str, dict[str, str | list]]: The domain information as a dictionary.
         """
         key = key.lower()
 
@@ -321,8 +322,8 @@ class HurricaneDNS:
         Cache the records for a domain.
 
         Args:
-            domain (str | None, optional): The domain to read records from. Defaults to None.
-            element (etree._Element | None, optional): The element to read records from. Defaults to None.
+            domain (str, optional): The domain to read records from. Defaults to None.
+            element (etree._Element, optional): The element to read records from. Defaults to None.
 
         Returns:
             None
@@ -331,13 +332,13 @@ class HurricaneDNS:
         if element is not None:
             # Find the domain name from the response
             try:
-                logger.debug("--Reading records from last response--")
+                logger.info("Reading records from last response")
                 d = element.find(r'.//*[@id="content"]/div/div[2]')
                 domain = re.match(r"Managing zone: (.*)", d.text).group(1)
             except Exception as e:
                 logger.exception(e)
                 element = None
-                raise HurricaneError("--Failed to read record from last response, domain is needed for cache_records--")
+                raise HurricaneError("Failed to read record from last response, domain is needed for cache_records")
 
         domain_info = self.get_domain_info(domain)
 
@@ -345,7 +346,7 @@ class HurricaneDNS:
 
         if domain_info["type"] == "zone":
             if element is None:
-                logger.debug("--Pulling domain record data from remote, please wait--")
+                logger.info("Pulling domain record data from remote")
                 element = self.__submit(
                     {
                         "hosted_dns_zoneid": domain_info["id"],
@@ -362,22 +363,26 @@ class HurricaneDNS:
                 if status:
                     status = status.group(1)
 
+                mx = None
+                if data[5].text != '-':
+                    mx = int(data[5].text)
+
                 records.append(
                     {
-                        "id": data[1].text,
+                        "id": int(data[1].text),
                         "status": status,
                         "host": data[2].text,
                         "type": data[3].find("span").get("data"),
-                        "ttl": data[4].text,
-                        "mx": data[5].text,
+                        "ttl": int(data[4].text),
+                        "mx": mx,
                         "value": data[6].text,
                         "extended": data[6].get("data"),
-                        "ddns": data[7].text,
+                        "ddns": int(data[7].text),
                     }
                 )
         elif domain_info["type"] == "slave":
             if element is None:
-                logger.debug("--Pulling domain record data from remote, please wait--")
+                logger.info("Pulling domain record data from remote")
                 element = self.__submit(
                     {"domid": domain_info["id"], "menu": "edit_slave", "action": "edit"}
                 )
@@ -385,12 +390,12 @@ class HurricaneDNS:
             rows = element.findall(r'.//tr[@class="dns_tr"]')
             records = [
                 {
-                    "id": r.get("id"),
+                    "id": int(r.get("id")),
                     "status": "locked",
                     "host": r.findall("td")[0].text,
                     "type": r.findall("td")[1].text,
-                    "ttl": r.findall("td")[2].text,
-                    "mx": r.findall("td")[3].text,
+                    "ttl": int(r.findall("td")[2].text),
+                    "mx": int(r.findall("td")[3].text) if r.findall("td")[3].text != '-' else None,
                     "value": r.findall("td")[4].text,
                 }
                 for r in rows
@@ -407,12 +412,14 @@ class HurricaneDNS:
             domain (str): The domain name.
 
         Returns:
-            list[dict[str, str | None]]: A list of record dictionaries, each with keys "id", "status", "host", "type", "ttl", "mx", "value", and "ddns".
+            list[dict[str, str]]: A list of record dictionaries, each with keys "id", "status", "host", "type", "ttl", "mx", "value", and "ddns".
         """
         domain_info = self.get_domain_info(domain)
+
         if domain_info["records"] is None:
             self.cache_records(domain=domain)
             domain_info = self.get_domain_info(domain)
+
         return domain_info["records"]
 
     def get_record_by_id(
@@ -426,7 +433,7 @@ class HurricaneDNS:
             record_id (str): The record ID.
 
         Returns:
-            dict[str, str | None]: The record dictionary with keys "id", "status", "host", "type", "ttl", "mx", "value", and "ddns".
+            dict[str, str]: The record dictionary with keys "id", "status", "host", "type", "ttl", "mx", "value", and "ddns".
         """
         records = self.get_domain_records(domain)
         for r in records:
@@ -442,7 +449,7 @@ class HurricaneDNS:
         host: str,
         rtype: Optional[str] = None,
         value: Optional[str] = None,
-        mx: Optional[str] = None,
+        mx: Optional[int] = None,
         ttl: Optional[int] = None,
     ) -> list[dict[str, Optional[str]]]:
         """
@@ -451,13 +458,13 @@ class HurricaneDNS:
         Args:
             domain (str): The domain name.
             host (str): The host name.
-            rtype (str | None, optional): The record type. Defaults to None.
-            value (str | None, optional): The record value. Defaults to None.
-            mx (str | None, optional): The record MX value. Defaults to None.
-            ttl (int | None, optional): The record TTL value. Defaults to None.
+            rtype (str, optional): The record type. Defaults to None.
+            value (str, optional): The record value. Defaults to None.
+            mx (str, optional): The record MX value. Defaults to None.
+            ttl (int, optional): The record TTL value. Defaults to None.
 
         Returns:
-            list[dict[str, str | None]]: A list of record dictionaries that match the criteria, each with keys "id", "status", "host", "type", "ttl", "mx", "value", and "ddns".
+            list[dict[str, str]]: A list of record dictionaries that match the criteria, each with keys "id", "status", "host", "type", "ttl", "mx", "value", and "ddns".
         """
         rtype = rtype.lower() if rtype else rtype
         records = self.get_domain_records(domain)
@@ -468,7 +475,7 @@ class HurricaneDNS:
                 and (rtype is None or r["type"].lower() == rtype)
                 and (value is None or r["value"] == value)
                 and (mx is None or r["mx"] == mx)
-                and (ttl is None or r["ttl"] == str(ttl))
+                and (ttl is None or r["ttl"] == ttl)
             ):
                 results.append(r)
         return results
@@ -491,14 +498,14 @@ class HurricaneDNS:
             h = h.lower()
         return h
 
-    def __add_or_edit_record(
+    def add_or_edit_record(
         self,
         domain: str,
         host: str,
         record_id: Optional[int] = None,
         rtype: Optional[str] = None,
         value: Optional[str] = None,
-        mx: Optional[str] = None,
+        mx: Optional[int] = None,
         ttl: Optional[int] = None,
         DDNS_key: Optional[str] = None,
     ) -> None:
@@ -508,12 +515,15 @@ class HurricaneDNS:
         Args:
             domain (str): The domain name.
             host (str): The host name.
-            record_id (int | None): The record ID to edit. If None, a new record is created.
-            rtype (str | None): The record type. Defaults to None.
-            value (str | None): The record value. Defaults to None.
-            mx (str | None): The record MX value. Defaults to None.
-            ttl (int | None): The record TTL value. Defaults to None.
-            DDNS_key (str | None): The DDNS key to use. Defaults to None.
+            record_id (int): The record ID to edit. If None, a new record is created.
+            rtype (str): The record type. Defaults to None.
+            value (str): The record value. Defaults to None.
+            mx (int): The record MX value. Defaults to None.
+            ttl (int): The record TTL value. Defaults to None.
+            DDNS_key (str): The DDNS key to use. Defaults to None.
+
+        Raises:
+            HurricaneBadArgumentError: If the domain is a slave zone.
 
         Returns:
             None
@@ -538,7 +548,7 @@ class HurricaneDNS:
                     "hosted_dns_editrecord": "Update" if record_id else "Submit",
                     "Name": host.lower(),
                     "Type": rtype,
-                    "Priority": mx or "",
+                    "Priority": str(mx) if mx else "",
                     "Content": value,
                     "TTL": str(ttl),
                     "dynamic": 1 if DDNS_key else 0,
@@ -546,6 +556,8 @@ class HurricaneDNS:
             )
         except HurricaneError as e:
             logger.error('Record "%s" (%s) not added or modified for domain "%s"', host, rtype, domain)
+            logger.exception(e)
+            raise HurricaneBadArgumentError(e)
 
         # Submit DDNS_key
         if DDNS_key:
@@ -565,37 +577,38 @@ class HurricaneDNS:
                 )
             except HurricaneError as e:
                 logger.error('Record "%s" (%s) DDNS key not modified for domain "%s"', host, rtype, domain)
+                logger.exception(e)
                 raise HurricaneBadArgumentError(e)
 
         # Updating the record cache
         self.cache_records(element=element)
 
-    def add_record(
+    def edit_record_by_id(
         self,
         domain: str,
         host: str,
+        record_id: int,
         rtype: str,
-        value: str,
-        mx: Optional[str] = None,
-        ttl: int = 86400,
-        DDNS_key: Optional[str] = None,
+        value: Optional[str] = None,
+        mx: Optional[int] = None,
+        ttl: Optional[int] = None,
     ) -> None:
         """
-        Add a record for a domain.
+        Edit a record for a domain.
 
         Args:
             domain (str): The domain name.
             host (str): The host name.
+            record_id (int): The record ID to edit.
             rtype (str): The record type.
             value (str): The record value.
-            mx (str | None, optional): The record MX value. Defaults to None.
+            mx (int, optional): The record MX value. Defaults to None.
             ttl (int, optional): The record TTL value. Defaults to 86400.
-            DDNS_key (str | None, optional): The DDNS key to use. Defaults to None.
 
         Returns:
             None
         """
-        self.__add_or_edit_record(domain, host, None, rtype, value, mx, ttl, DDNS_key)
+        self.add_or_edit_record(domain, host, record_id, rtype, value, mx, ttl)
 
     def edit_record(
         self,
@@ -603,10 +616,10 @@ class HurricaneDNS:
         host: str,
         rtype: str,
         old_value: Optional[str] = None,
-        old_mx: Optional[str] = None,
+        old_mx: Optional[int] = None,
         old_ttl: Optional[int] = None,
         value: Optional[str] = None,
-        mx: Optional[str] = None,
+        mx: Optional[int] = None,
         ttl: Optional[int] = None,
     ) -> None:
         """
@@ -616,12 +629,12 @@ class HurricaneDNS:
             domain (str): The domain name.
             host (str): The host name.
             rtype (str): The record type.
-            old_value (str | None, optional): The old record value. Defaults to None.
-            old_mx (str | None, optional): The old record MX value. Defaults to None.
-            old_ttl (int | None, optional): The old record TTL value. Defaults to None.
-            value (str | None, optional): The new record value. Defaults to None.
-            mx (str | None, optional): The new record MX value. Defaults to None.
-            ttl (int | None, optional): The new record TTL value. Defaults to None.
+            old_value (str, optional): The old record value. Defaults to None.
+            old_mx (int, optional): The old record MX value. Defaults to None.
+            old_ttl (int, optional): The old record TTL value. Defaults to None.
+            value (str, optional): The new record value. Defaults to None.
+            mx (int, optional): The new record MX value. Defaults to None.
+            ttl (int, optional): The new record TTL value. Defaults to None.
 
         Returns:
             None
@@ -648,7 +661,7 @@ class HurricaneDNS:
         if not ttl:
             ttl = int(record["ttl"])
 
-        self.__add_or_edit_record(
+        self.add_or_edit_record(
             domain, host, int(record["id"]), rtype, value, mx, ttl, record["ddns"]
         )
 
@@ -689,7 +702,7 @@ class HurricaneDNS:
         host: str,
         rtype: Optional[str] = None,
         value: Optional[str] = None,
-        mx: Optional[str] = None,
+        mx: Optional[int] = None,
         ttl: Optional[int] = None,
     ) -> None:
         """
@@ -698,10 +711,10 @@ class HurricaneDNS:
         Args:
             domain (str): The domain name.
             host (str): The host name.
-            rtype (str | None, optional): The record type. Defaults to None.
-            value (str | None, optional): The record value. Defaults to None.
-            mx (str | None, optional): The record MX value. Defaults to None.
-            ttl (int | None, optional): The record TTL value. Defaults to None.
+            rtype (str, optional): The record type. Defaults to None.
+            value (str, optional): The record value. Defaults to None.
+            mx (int, optional): The record MX value. Defaults to None.
+            ttl (int, optional): The record TTL value. Defaults to None.
 
         Returns:
             None
@@ -714,9 +727,9 @@ class HurricaneDNS:
             )
 
         records = self.filter_records(domain, host, rtype, value, mx, ttl)
-        logger.debug("Deleting %s record(s) from domain %s...", len(records), domain)
+        logger.info("Deleting %s record(s) from domain %s.", len(records), domain)
         for r in records:
             if r["status"] == "locked":
-                logger.info("Record %s is locked, skipping...", r)
+                logger.info("Record %s is locked, skipping.", r)
                 continue
             self.del_record_by_id(domain, int(r["id"]))

@@ -11,10 +11,13 @@ try:
 except ImportError:
     from io import StringIO
 
+
 import cmd
 from importlib.metadata import version
 from shlex import split as split_args
 
+from typing import Optional
+import logging
 import HurricaneDNS
 
 try:
@@ -25,6 +28,12 @@ __author__ = "Brian Hartvigsen <brian.andrew@brianandjenny.com>"
 __copyright__ = "Copyright 2015, Brian Hartvigsen"
 __credits__ = ["Scott Yang", "Brian Hartvigsen"]
 __license__ = "MIT"
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
 
 
 class HurricaneDNSShell(cmd.Cmd):
@@ -70,7 +79,7 @@ class HurricaneDNSShell(cmd.Cmd):
             return
 
         if len(args) == 3 and args[0].lower() != "-f":
-            self.__print_error("If passing 3 arguments, first arg shoudl be -f")
+            self.__print_error("If passing 3 arguments, first arg should be -f")
             return
 
         existing = self.heDNS.domain_list
@@ -295,11 +304,17 @@ class HurricaneDNSShell(cmd.Cmd):
             return self.filter_down(args, pos, ttl)
 
     def do_EOF(self, args):
+        """
+        Exit the shell.
+        """
         print()
-        return 1
+        return True
 
     def do_exit(self, args):
-        return 1
+        """
+        Exit the shell.
+        """
+        return True
 
     def complete_ls(self, text, line, begidx, endidx):
         domains = list(
@@ -462,26 +477,168 @@ class HurricaneDNSShell(cmd.Cmd):
                             pass
                         self.__print_error(e)
 
+    def do_show(self, args):
+        """!NAME
+        show - Show a domain or record
+
+        !SYNOPSIS
+        show domain
+
+        !DESCRIPTION
+        Showing either a domain or a record from HurricaneDNS.
+
+        """
+        args = split_args(args)
+        if len(args) == 0:
+            self.__print_error("Invalid arguments")
+            return
+
+        try:
+            src_records = self.heDNS.get_domain_records(args[0])
+        except HurricaneDNS.HurricaneError as e:
+            if "does not exist" in str(e):
+                self.__print_error("There is no domain '%s'" % args[0])
+            else:
+                self.__print_error(e)
+            return
+
+        for record in src_records:
+            # format in bind format
+            data = [
+                record["host"],
+                str(record["ttl"]),
+                "IN",
+                record["type"],
+            ]
+            if record["type"] == "MX":
+                data.append(str(record["mx"]))
+            data.append(record["value"])
+
+            comments = [
+                f"ID: {record['id']}",
+                f"Status: {record['status']}" if record["status"] else "",
+                "ddns enabled" if record["ddns"] == "1" else "",
+            ]
+
+            rr_data = " ".join(data) + " ; " + " ".join(comments)
+            print(rr_data)
+
+    def do_del_record(self, args):
+        """!NAME
+        del_record - Delete a record
+
+        !SYNOPSIS
+        del_record domain record_id
+
+        !DESCRIPTION
+        Delete a record from HurricaneDNS.
+
+        """
+        args = split_args(args)
+        if len(args) < 2:
+            self.__print_error("Invalid arguments")
+            return
+
+        try:
+            self.heDNS.del_record_by_id(args[0], int(args[1]))
+        except HurricaneDNS.HurricaneError as e:
+            if "does not exist" in str(e):
+                self.__print_error("There is no domain '%s'" % args[0])
+            else:
+                self.__print_error(e)
+            return
+
+    def __edit_record(self,
+                      domain: str,
+                      record_id: int,
+                      host: Optional[str] = None,
+                      rtype: Optional[str] = None,
+                      value: Optional[str] = None,
+                      mx: Optional[int] = None,
+                      ttl: Optional[int] = None):
+        try:
+            src_records = self.heDNS.get_domain_records(domain)
+        except HurricaneDNS.HurricaneError as e:
+            if "does not exist" in str(e):
+                self.__print_error("There is no domain '%s'" % domain)
+            else:
+                self.__print_error(e)
+            return
+
+        for record in src_records:
+            if record["id"] == record_id:
+                if host is not None:
+                    record["host"] = host
+                if rtype is not None:
+                    record["type"] = rtype
+                if value is not None:
+                    record["value"] = value
+                if mx is not None:
+                    record["mx"] = mx
+                if ttl is not None:
+                    record["ttl"] = ttl
+
+                self.heDNS.add_or_edit_record(
+                    domain,
+                    record["host"],
+                    int(record["id"]),
+                    record["type"],
+                    record["value"],
+                    record["mx"],
+                    record["ttl"],
+                )
+                break
+        else:
+            self.__print_error("There is no record '%s' in domain '%s'" % (record_id, domain))
+
+    def do_set(self, args):
+        """!NAME
+        set - Edit a domain or record
+
+        !SYNOPSIS
+        set domain record_id value
+        set domain record_id "host" host
+        set domain record_id "type" type
+        set domain record_id "mx" mx
+        set domain record_id "ttl" ttl
+
+        !DESCRIPTION
+        Edit a record in HurricaneDNS.
+
+        """
+        args = split_args(args)
+        if len(args) == 3:
+            option = "value"
+            value = args[2]
+            args = [args[0], args[1], option, value]
+
+        if len(args) < 4:
+            self.__print_error("Invalid arguments")
+            return
+
+        try:
+            domain = args[0]
+            record_id = int(args[1])
+            option = args[2]
+            value = args[3]
+
+            if option == "host":
+                self.__edit_record(domain, record_id, host=value)
+            elif option == "type":
+                self.__edit_record(domain, record_id, rtype=value)
+            elif option == "value":
+                self.__edit_record(domain, record_id, value=value)
+            elif option == "mx":
+                self.__edit_record(domain, record_id, mx=int(value))
+            elif option == "ttl":
+                self.__edit_record(domain, record_id, ttl=int(value))
+            else:
+                self.__print_error("Invalid arguments")
+        except HurricaneDNS.HurricaneError as e:
+            self.__print_error(e)
+
     def emptyline(self):
         pass
-
-    @staticmethod
-    def write_help(func):
-        def decorator(self):
-            for line in StringIO(func.__doc__):
-                line = line.strip()
-                if line.startswith("!"):
-                    print(line[1:].upper())
-                else:
-                    print("        " + line)
-
-        return decorator
-
-    help_add = write_help(do_add)
-    help_del = write_help(do_del)
-    help_ls = write_help(do_ls)
-    help_import = write_help(do_import)
-    help_cp = write_help(do_cp)
 
     def cmdloop(self):
         try:
