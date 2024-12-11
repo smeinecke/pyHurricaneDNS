@@ -41,11 +41,9 @@ pip install .
 - ls (domain, record)
 - import (BIND zone files)
 - cp (records from one domain to another)
-
-## TODO
-
-- Edit record. *Currently implemented through del+add*.
-- Delete record with specified ID.
+- set (update a record by ID)
+- show (export content of a zone)
+- del_record (remove a record by ID)
 
 ## Usage
 
